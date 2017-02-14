@@ -77,11 +77,7 @@ enum WsResponse<'h, 'b> {
 }
 */
 
-pub struct WsCodec
-{
-    // "initialized" is false pre-handshake, true post-handshake
-    initialized: bool
-}
+pub struct WsCodec;
 
 impl Codec for WsCodec {
     type In = Vec<u8>;
@@ -89,19 +85,15 @@ impl Codec for WsCodec {
 
     fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Self::In>> {
         println!("Decode {} bytes.", buf.len());
-        if self.initialized {
-            println!("{}", String::from_utf8(buf.as_slice().to_vec()).unwrap());
-            let len = buf.len();
-            let mut buf = buf.drain_to(len);
-            let mut mutbuf = buf.get_mut();
-            let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
-            if let Some(boxed_frame) = result {
-                Ok(Some(boxed_frame.payload()))
-            } else {
-                Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
-            }
+        println!("{}", String::from_utf8(buf.as_slice().to_vec()).unwrap());
+        let len = buf.len();
+        let mut buf = buf.drain_to(len);
+        let mut mutbuf = buf.get_mut();
+        let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
+        if let Some(boxed_frame) = result {
+            Ok(Some(boxed_frame.payload()))
         } else {
-            Ok(None)
+            Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
         }
 
 /*
@@ -161,7 +153,7 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                                     Error = io::Error>>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
-        let transport = io.framed(WsCodec{initialized: false}); 
+        let transport = io.framed(WsCodec{}); 
         // transport : Framed<Self: TcpStream, C: WsCodec>
 
         // handshake : StreamFuture< Framed<TcpStream, WsCodec> > where Item: Framed::Item = WsCodec::In
@@ -175,11 +167,19 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                         /* Parse the incoming http request */
                         let mut headers = [httparse::EMPTY_HEADER; 16];
                         let mut req = httparse::Request::new(&mut headers);
-                        let res = req.parse(msg.as_slice());
-
-                        /* FIXME */
-                        let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
-                        Box::new(future::err(err)) as Self::BindTransport
+                        if let Ok(len) = req.parse(msg.as_slice()) {
+                            /* Formulate a response */
+                            /* FIXME: Just accept the connection for now */
+                            /* First, get the Sec-WebSocket-Key header */
+                            if let Some(key) = req.headers.iter().find(|h| h.name == "Sec-WebSocket-Key") {
+                            }
+                            
+                            let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
+                            Box::new(future::err(err)) as Self::BindTransport
+                        } else {
+                            let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
+                            Box::new(future::err(err)) as Self::BindTransport
+                        }
                     }
                     _ => {
                         let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
