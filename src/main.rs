@@ -8,7 +8,8 @@ extern crate simple_stream as ss;
 use futures::Stream;
 use ss::frame::Frame;
 use ss::frame::FrameBuilder;
-use std::fmt::Write;
+//use std::fmt::Write;
+use std::io::Write;
 use std::io;
 use std::ops::DerefMut;
 use std::str;
@@ -46,7 +47,22 @@ impl<'h, 'b> Serializable for httparse::Response<'h, 'b> {
 fn serialize_httpresponse(response: &httparse::Response, 
                           buf: &mut Vec<u8>) -> Option<usize>
 {
-    None
+    match (response.version, response.code, response.reason) {
+        (Some(version), Some(code), Some(reason)) => {
+            let mut _buf = Vec::new();
+            write!(&mut _buf, 
+                "HTTP/{} {} {}\r\n", 
+                response.version.unwrap(), 
+                response.code.unwrap(), 
+                response.reason.unwrap());
+            let len = _buf.len();
+            buf.append(&mut _buf);
+            return Some(len);
+        }
+        _ => {
+            return None;
+        }
+    }
 }
 
 /*
@@ -127,12 +143,12 @@ impl Codec for WsCodec {
 	}
 }
 
-pub struct LineProto;
+pub struct WsProto;
 
 use tokio_core::io::{Io, Framed};
 
     // When created by TcpServer, "T" is "TcpStream"
-impl<T: Io + 'static> ServerProto<T> for LineProto {
+impl<T: Io + 'static> ServerProto<T> for WsProto {
     /// For this protocol style, `Request` matches the codec `In` type
     type Request = Vec<u8>;
 
@@ -154,8 +170,22 @@ impl<T: Io + 'static> ServerProto<T> for LineProto {
             // the transport, if it errors out.
             .map_err(|(e, _)| e)
             .and_then(|(line, transport)| {
-                let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
-                Box::new(future::err(err)) as Self::BindTransport
+                match line {
+                    Some(ref msg) => {
+                        /* Parse the incoming http request */
+                        let mut headers = [httparse::EMPTY_HEADER; 16];
+                        let mut req = httparse::Request::new(&mut headers);
+                        let res = req.parse(msg.as_slice());
+
+                        /* FIXME */
+                        let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
+                        Box::new(future::err(err)) as Self::BindTransport
+                    }
+                    _ => {
+                        let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
+                        Box::new(future::err(err)) as Self::BindTransport
+                    }
+                }
             });
         //Ok(io.framed(WsCodec))
 
@@ -171,7 +201,7 @@ use futures::{future, Future, BoxFuture};
 
 impl Service for Echo {
     // These types must match the corresponding protocol types:
-    type Request = Box<ss::frame::Frame>;
+    type Request = Vec<u8>;
     type Response = Vec<u8>;
 
     // For non-streaming protocols, service errors are always io::Error
@@ -184,6 +214,8 @@ impl Service for Echo {
     fn call(&self, req: Self::Request) -> Self::Future {
         // In this case, the response is immediate.
         // We get a frame in. Get the data
+
+        /* 
         println!("Service call.");
         let payload = req.payload();
         let mut s = String::new();
@@ -192,7 +224,11 @@ impl Service for Echo {
         }
         println!("{}", s);
         future::ok(payload).boxed()
+        */
+
         //future::ok(req).boxed()
+
+        future::ok(Vec::new()).boxed()
     }
 }
 
@@ -204,7 +240,7 @@ fn main() {
     let addr = "0.0.0.0:12345".parse().unwrap();
 
     // The builder requires a protocol and an address
-    let server = TcpServer::new(LineProto, addr);
+    let server = TcpServer::new(WsProto, addr);
 
     // We provide a way to *instantiate* the service for each new
     // connection; here, we just immediately return a new instance.
