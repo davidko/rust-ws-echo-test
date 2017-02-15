@@ -83,7 +83,15 @@ enum WsResponse<'h, 'b> {
 }
 */
 
-pub struct WsCodec;
+pub struct WsCodec {
+    pub initialized: bool
+}
+
+impl WsCodec {
+    fn new() -> WsCodec {
+        WsCodec{ initialized: false }
+    }
+}
 
 impl Codec for WsCodec {
     type In = Vec<u8>;
@@ -159,7 +167,7 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                                     Error = io::Error>>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
-        let transport = io.framed(WsCodec{}); 
+        let transport = io.framed(WsCodec::new()); 
         // transport : Framed<Self: TcpStream, C: WsCodec>
 
         // handshake : StreamFuture< Framed<TcpStream, WsCodec> > where Item: Framed::Item = WsCodec::In
@@ -205,10 +213,6 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                                 let mut payload = Vec::new();
                                 if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
                                     return Box::new(transport.send(payload));
-                                    /*
-                                    let mut base_transport = transport.get_mut();
-                                    return Box::new( tokio_core::io::write_all( &mut base_transport, payload).map( move |_| transport )) as Self::BindTransport;
-                                    */
                                 } else {
                                     let err = io::Error::new(io::ErrorKind::Other, 
                                                              "Could not serialize response");
