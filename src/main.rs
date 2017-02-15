@@ -1,11 +1,15 @@
 extern crate futures;
 extern crate httparse;
+extern crate openssl;
 extern crate tokio_core;
 extern crate tokio_proto;
 extern crate tokio_service;
+extern crate rustc_serialize as serialize;
 extern crate simple_stream as ss;
 
-use futures::Stream;
+use futures::{Sink, Stream};
+use openssl::crypto::hash::{self, hash};
+use serialize::base64::{FromBase64, STANDARD};
 use ss::frame::Frame;
 use ss::frame::FrameBuilder;
 //use std::fmt::Write;
@@ -16,6 +20,8 @@ use std::str;
 use tokio_core::io::{Codec, EasyBuf};
 
 use tokio_proto::pipeline::ServerProto;
+
+static MAGIC_GUID: &'static str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
 /*
 trait Serializable {
@@ -161,7 +167,7 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
             // We don't care about the second item of the error tuple, which is
             // the transport, if it errors out.
             .map_err(|(e, _)| e)
-            .and_then(|(line, transport)| {
+            .and_then(|(line, mut transport)| {
                 match line {
                     Some(ref msg) => {
                         /* Parse the incoming http request */
@@ -172,10 +178,48 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                             /* FIXME: Just accept the connection for now */
                             /* First, get the Sec-WebSocket-Key header */
                             if let Some(key) = req.headers.iter().find(|h| h.name == "Sec-WebSocket-Key") {
-                            }
+                                if key.value.len() != 16 {
+                                    let err = io::Error::new(io::ErrorKind::Other, 
+                                                             "invalid handshake: No Sec-WebSocket-Key header found");
+                                    return Box::new(future::err(err)) as Self::BindTransport
+                                } 
+
+                                /* Formulate the Server's response:
+                                   https://tools.ietf.org/html/rfc6455#section-1.3 */
+
+                                /* First, formulate the "Sec-WebSocket-Accept" header field */
+                                let mut concat_key = String::new();
+                                concat_key.push_str(str::from_utf8(key.value).unwrap());
+                                concat_key.push_str(MAGIC_GUID);
+                                let output = hash(hash::Type::SHA1, concat_key.as_bytes());
+                                /* Form the HTTP response */
+                                let mut headers : [httparse::Header; 3] = [ 
+                                    httparse::Header{name: "Upgrade", value: b"websocket"},
+                                    httparse::Header{name: "Connection", value: b"Upgrade"},
+                                    httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
+                                    ];
+                                let mut response = httparse::Response::new(&mut headers);
+                                response.version = Some(1u8);
+                                response.code = Some(101);
+                                response.reason = Some("Switching Protocols");
+                                let mut payload = Vec::new();
+                                if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
+                                    return Box::new(transport.send(payload));
+                                    /*
+                                    let mut base_transport = transport.get_mut();
+                                    return Box::new( tokio_core::io::write_all( &mut base_transport, payload).map( move |_| transport )) as Self::BindTransport;
+                                    */
+                                } else {
+                                    let err = io::Error::new(io::ErrorKind::Other, 
+                                                             "Could not serialize response");
+                                    return Box::new(future::err(err)) as Self::BindTransport;
+                                }
+                            } 
                             
-                            let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
+                            let err = io::Error::new(io::ErrorKind::Other, 
+                                                     "invalid handshake: No Sec-WebSocket-Key header found");
                             Box::new(future::err(err)) as Self::BindTransport
+                            
                         } else {
                             let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
                             Box::new(future::err(err)) as Self::BindTransport
