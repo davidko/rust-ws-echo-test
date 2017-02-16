@@ -83,13 +83,11 @@ enum WsResponse<'h, 'b> {
 }
 */
 
-pub struct WsCodec {
-    pub initialized: bool
-}
+pub struct WsCodec;
 
 impl WsCodec {
     fn new() -> WsCodec {
-        WsCodec{ initialized: false }
+        WsCodec{}
     }
 }
 
@@ -291,6 +289,7 @@ fn serve<S>(s: S)-> io::Result<()>
                         Response = Vec<u8>,
                         Error = io::Error> + 'static
 {
+    type WriteResult = Box<Future<Item=(tokio_core::net::TcpStream, Vec<u8>), Error=io::Error>>;
     let mut core = reactor::Core::new()?;
     let handle = core.handle();
 
@@ -300,22 +299,73 @@ fn serve<S>(s: S)-> io::Result<()>
     let connections = listener.incoming();
     let server = connections.for_each(move |(socket, _peer_addr)| {
         /* Receive the HTTP handshake */
-        tokio_core::io::read(socket, Vec::new()).and_then( |(socket, buf, n)| {
+        let mut service = s.new_service()?;
+
+        let receive_handshake = tokio_core::io::read(socket, Vec::new());
+        let reply_handshake = receive_handshake.and_then(|(socket, buf, n)| -> WriteResult {
             /* Parse the HTTP request */
             let mut headers = [httparse::EMPTY_HEADER; 32];
             let mut req = httparse::Request::new(&mut headers);
             if let Ok(size) = req.parse(buf.as_slice()) {
                 /* Send the reply */
-                /* TODO */
+
+                let maybe_key = req.headers.iter().find(|h| h.name=="Sec-WebSocket-Key");
+                if maybe_key.is_none() {
+                    let err = io::Error::new(io::ErrorKind::Other, 
+                        "invalid handshake: No Sec-WebSocket-Key header found");
+                    return Box::new(future::err(err)) as WriteResult;
+                }
+
+                let key = maybe_key.unwrap();
+
+                /* Formulate the Server's response:
+                   https://tools.ietf.org/html/rfc6455#section-1.3 */
+
+                /* First, formulate the "Sec-WebSocket-Accept" header field */
+                let mut concat_key = String::new();
+                concat_key.push_str(str::from_utf8(key.value).unwrap());
+                concat_key.push_str(MAGIC_GUID);
+                let output = hash(hash::Type::SHA1, concat_key.as_bytes());
+                /* Form the HTTP response */
+                let mut headers : [httparse::Header; 3] = [ 
+                    httparse::Header{name: "Upgrade", value: b"websocket"},
+                    httparse::Header{name: "Connection", value: b"Upgrade"},
+                    httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
+                    ];
+                let mut response = httparse::Response::new(&mut headers);
+                response.version = Some(1u8);
+                response.code = Some(101);
+                response.reason = Some("Switching Protocols");
+                let mut payload = Vec::new();
+                if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
+                    return tokio_core::io::write_all(socket, payload).boxed();
+                } else {
+                    let err = io::Error::new(io::ErrorKind::Other, 
+                                             "Could not serialize response");
+                    return Box::new(future::err(err));
+                }
+
                 let err = io::Error::new(io::ErrorKind::Other, 
                     "invalid handshake: Could not parse HTTP Request");
-                future::err(err)
+                future::err(err).boxed() as WriteResult
             } else {
                 let err = io::Error::new(io::ErrorKind::Other, 
                     "invalid handshake: Could not parse HTTP Request");
-                future::err(err)
+                future::err(err).boxed() as WriteResult
             } 
-        })
+        });
+
+        let finish_handshake = reply_handshake.and_then( move |(socket, buf)| {
+            let (writer, reader) = socket.framed(WsCodec).split();
+            Box::new(future::ok(())) 
+        });
+
+        handle.spawn(
+            finish_handshake.then(|_| future::ok(()))
+        );
+
+        Ok(())
+
 });
 
     core.run(server)
