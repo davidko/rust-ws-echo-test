@@ -301,6 +301,8 @@ fn serve<S>(s: S)-> io::Result<()>
         /* Receive the HTTP handshake */
         let mut service = s.new_service()?;
 
+        let handle = handle.clone();
+
         let receive_handshake = tokio_core::io::read(socket, Vec::new());
         let reply_handshake = receive_handshake.and_then(|(socket, buf, n)| -> WriteResult {
             /* Parse the HTTP request */
@@ -357,12 +359,18 @@ fn serve<S>(s: S)-> io::Result<()>
 
         let finish_handshake = reply_handshake.and_then( move |(socket, buf)| {
             let (writer, reader) = socket.framed(WsCodec).split();
+            let responses = reader.and_then(move |req| service.call(req));
+            let server = writer.send_all(responses)
+                .then(|_| Box::new(future::ok(())) as Box<Future<Item=(), Error=()>>);
+            handle.spawn(server);
             Box::new(future::ok(())) 
         });
 
+/*
         handle.spawn(
             finish_handshake.then(|_| future::ok(()))
         );
+        */
 
         Ok(())
 
