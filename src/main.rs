@@ -1,5 +1,8 @@
+extern crate env_logger;
 extern crate futures;
 extern crate httparse;
+#[macro_use]
+extern crate log;
 extern crate openssl;
 extern crate tokio_core;
 extern crate tokio_proto;
@@ -96,8 +99,8 @@ impl Codec for WsCodec {
     type Out = Vec<u8>;
 
     fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Self::In>> {
-        println!("Decode {} bytes.", buf.len());
-        println!("{}", String::from_utf8(buf.as_slice().to_vec()).unwrap());
+        info!("Decode {} bytes.", buf.len());
+        info!("{}", String::from_utf8(buf.as_slice().to_vec()).unwrap());
         let len = buf.len();
         let mut buf = buf.drain_to(len);
         let mut mutbuf = buf.get_mut();
@@ -131,7 +134,7 @@ impl Codec for WsCodec {
 	fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>)
 			 -> io::Result<()>
 	{
-        println!("Encode.");
+        info!("Encode.");
         let frame = ss::frame::WebSocketFrame::new(
             msg.as_slice(),
             ss::frame::FrameType::Data,
@@ -262,13 +265,13 @@ impl Service for Echo {
         // We get a frame in. Get the data
 
         /* 
-        println!("Service call.");
+        info!("Service call.");
         let payload = req.payload();
         let mut s = String::new();
         for byte in &payload {
             write!(s, "{:X} ", byte);
         }
-        println!("{}", s);
+        info!("{}", s);
         future::ok(payload).boxed()
         */
 
@@ -298,7 +301,7 @@ fn serve<S>(s: S)-> io::Result<()>
 
     let connections = listener.incoming();
     let server = connections.for_each(move |(socket, _peer_addr)| {
-        println!("Connection received.");
+        info!("Connection received.");
         /* Receive the HTTP handshake */
         let mut service = s.new_service()?;
 
@@ -306,7 +309,7 @@ fn serve<S>(s: S)-> io::Result<()>
 
         let receive_handshake = tokio_core::io::read(socket, Vec::new());
         let reply_handshake = receive_handshake.and_then(|(socket, buf, n)| -> WriteResult {
-            println!("Reply handshake...");
+            info!("Reply handshake...");
             /* Parse the HTTP request */
             let mut headers = [httparse::EMPTY_HEADER; 32];
             let mut req = httparse::Request::new(&mut headers);
@@ -342,6 +345,7 @@ fn serve<S>(s: S)-> io::Result<()>
                 response.reason = Some("Switching Protocols");
                 let mut payload = Vec::new();
                 if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
+                    info!("Sending response...");
                     return tokio_core::io::write_all(socket, payload).boxed();
                 } else {
                     let err = io::Error::new(io::ErrorKind::Other, 
@@ -381,7 +385,9 @@ fn serve<S>(s: S)-> io::Result<()>
                         
 
 fn main() {
+    env_logger::init().unwrap();
     println!("Server starting...");
+    info!("Moop!");
     // Specify the localhost address
     //let addr = "0.0.0.0:12345".parse().unwrap();
 
