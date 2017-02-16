@@ -298,6 +298,7 @@ fn serve<S>(s: S)-> io::Result<()>
 
     let connections = listener.incoming();
     let server = connections.for_each(move |(socket, _peer_addr)| {
+        println!("Connection received.");
         /* Receive the HTTP handshake */
         let mut service = s.new_service()?;
 
@@ -305,6 +306,7 @@ fn serve<S>(s: S)-> io::Result<()>
 
         let receive_handshake = tokio_core::io::read(socket, Vec::new());
         let reply_handshake = receive_handshake.and_then(|(socket, buf, n)| -> WriteResult {
+            println!("Reply handshake...");
             /* Parse the HTTP request */
             let mut headers = [httparse::EMPTY_HEADER; 32];
             let mut req = httparse::Request::new(&mut headers);
@@ -356,25 +358,22 @@ fn serve<S>(s: S)-> io::Result<()>
                 future::err(err).boxed() as WriteResult
             } 
         });
-
+        
+        let _handle = handle.clone();
         let finish_handshake = reply_handshake.and_then( move |(socket, buf)| {
             let (writer, reader) = socket.framed(WsCodec).split();
             let responses = reader.and_then(move |req| service.call(req));
             let server = writer.send_all(responses)
-                .then(|_| Box::new(future::ok(())) as Box<Future<Item=(), Error=()>>);
+                .then(|_| Box::new(future::ok( () )) as Box<Future<Item=(), Error=()>> );
             handle.spawn(server);
-            Box::new(future::ok(())) 
-        });
+            Box::new(future::ok(())) as Box<Future<Item=(), Error=io::Error>>
+        }).map_err(|_| () );
 
-/*
-        handle.spawn(
-            finish_handshake.then(|_| future::ok(()))
-        );
-        */
+        _handle.spawn(finish_handshake);
 
         Ok(())
 
-});
+    });
 
     core.run(server)
 }
@@ -384,10 +383,14 @@ fn serve<S>(s: S)-> io::Result<()>
 fn main() {
     println!("Server starting...");
     // Specify the localhost address
-    let addr = "0.0.0.0:12345".parse().unwrap();
+    //let addr = "0.0.0.0:12345".parse().unwrap();
+
+    if let Err(e) = serve(|| Ok(Echo)) {
+        println!("Server failed with {}", e);
+    }
 
     // The builder requires a protocol and an address
-    let server = TcpServer::new(WsProto, addr);
+    // let server = TcpServer::new(WsProto, addr);
 
     // We provide a way to *instantiate* the service for each new
     // connection; here, we just immediately return a new instance.
