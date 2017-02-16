@@ -6,7 +6,7 @@ authors = ["David Ko <david@barobo.com>"]
 [dependencies]
 futures = "0.1"
 httparse = "*"
-openssl = "*"
+openssl = "0.7.14"
 rustc-serialize = "*"
 simple-stream = "*"
 tokio-core = "0.1"

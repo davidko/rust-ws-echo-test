@@ -282,6 +282,47 @@ impl Service for Echo {
 
 use tokio_proto::TcpServer;
 
+use tokio_core::reactor;
+use tokio_core::net;
+use tokio_service::{NewService};
+
+fn serve<S>(s: S)-> io::Result<()>
+    where S: NewService<Request = Vec<u8>,
+                        Response = Vec<u8>,
+                        Error = io::Error> + 'static
+{
+    let mut core = reactor::Core::new()?;
+    let handle = core.handle();
+
+    let address = "0.0.0.0:42001".parse().unwrap();
+    let listener = tokio_core::net::TcpListener::bind(&address, &handle).unwrap();
+
+    let connections = listener.incoming();
+    let server = connections.for_each(move |(socket, _peer_addr)| {
+        /* Receive the HTTP handshake */
+        tokio_core::io::read(socket, Vec::new()).and_then( |(socket, buf, n)| {
+            /* Parse the HTTP request */
+            let mut headers = [httparse::EMPTY_HEADER; 32];
+            let mut req = httparse::Request::new(&mut headers);
+            if let Ok(size) = req.parse(buf.as_slice()) {
+                /* Send the reply */
+                /* TODO */
+                let err = io::Error::new(io::ErrorKind::Other, 
+                    "invalid handshake: Could not parse HTTP Request");
+                future::err(err)
+            } else {
+                let err = io::Error::new(io::ErrorKind::Other, 
+                    "invalid handshake: Could not parse HTTP Request");
+                future::err(err)
+            } 
+        })
+});
+
+    core.run(server)
+}
+                        
+                        
+
 fn main() {
     println!("Server starting...");
     // Specify the localhost address
