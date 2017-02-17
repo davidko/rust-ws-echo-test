@@ -344,10 +344,50 @@ fn serve<S>(s: S)-> io::Result<()>
 
         let transport = socket.framed(HttpCodec);
         let handshake = transport.and_then(|http_map| {
+            type HandshakeResult = Box<Future<Item=(), Error=io::Error>>;
+            /*
             for (key, value) in http_map.iter() {
                 println!("{}: {}", key, str::from_utf8(value.as_slice()).unwrap());
             }
-            Box::new(future::ok(())) as Box<Future<Item=(), Error=io::Error>>
+            */
+            /* Get the "Sec-WebSocket-Key" header */
+            if !http_map.contains_key("Sec-WebSocket-Key") {
+                let err = io::Error::new(io::ErrorKind::Other, 
+                    "invalid handshake: Sec-WebSocket-Key header not found.");
+                return future::err(err).boxed() as HandshakeResult
+            }
+
+            let key = http_map.get("Sec-WebSocket-Key").unwrap();
+
+            /* Formulate the Server's response:
+               https://tools.ietf.org/html/rfc6455#section-1.3 */
+
+            /* First, formulate the "Sec-WebSocket-Accept" header field */
+            let mut concat_key = String::new();
+            concat_key.push_str(str::from_utf8(key).unwrap());
+            concat_key.push_str(MAGIC_GUID);
+            let output = hash(hash::Type::SHA1, concat_key.as_bytes());
+            /* Form the HTTP response */
+            let mut headers : [httparse::Header; 3] = [ 
+                httparse::Header{name: "Upgrade", value: b"websocket"},
+                httparse::Header{name: "Connection", value: b"Upgrade"},
+                httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
+                ];
+            let mut response = httparse::Response::new(&mut headers);
+            response.version = Some(1u8);
+            response.code = Some(101);
+            response.reason = Some("Switching Protocols");
+            let mut payload = Vec::new();
+            if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
+                info!("Sending response...");
+                /* TODO */
+            } else {
+                let err = io::Error::new(io::ErrorKind::Other, 
+                                         "Could not serialize response");
+                return Box::new(future::err(err));
+            }
+
+            Box::new(future::ok(())) as HandshakeResult
         }).into_future().map( |_| () ).map_err(|_| ());
 
         handle.spawn(handshake);
