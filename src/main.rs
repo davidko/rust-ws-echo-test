@@ -123,6 +123,11 @@ impl Codec for HttpCodec {
     }
 }
 
+pub enum WsFrame {
+    HttpFrame(Vec<u8>), // Contains raw HTTP data
+    WsFrame(Vec<u8>) // contains only payload portion of WS frame
+}
+
 pub struct WsCodec;
 
 impl WsCodec {
@@ -132,12 +137,20 @@ impl WsCodec {
 }
 
 impl Codec for WsCodec {
-    type In = Vec<u8>;
-    type Out = Vec<u8>;
+    type In = WsFrame;
+    type Out = WsFrame;
 
     fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Self::In>> {
         info!("Decode {} bytes.", buf.len());
-        info!("{}", String::from_utf8(buf.as_slice().to_vec()).unwrap());
+        if buf.as_slice().starts_with(b"GET") {
+            /* Parse HTTP Request */
+            let data = buf.as_slice().to_vec().clone();
+            return Ok(Some(WsFrame::HttpFrame(data)))
+        } else {
+            /* Parse WS Frame */
+        }
+        Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
+        /*
         let len = buf.len();
         let mut buf = buf.drain_to(len);
         let mut mutbuf = buf.get_mut();
@@ -147,6 +160,7 @@ impl Codec for WsCodec {
         } else {
             Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
         }
+        */
 
 /*
          if let Some(i) = buf.as_slice().iter().position(|&b| b == b'\n') {
@@ -171,6 +185,7 @@ impl Codec for WsCodec {
 	fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>)
 			 -> io::Result<()>
 	{
+        /*
         info!("Encode.");
         let frame = ss::frame::WebSocketFrame::new(
             msg.as_slice(),
@@ -178,6 +193,7 @@ impl Codec for WsCodec {
             ss::frame::OpType::Binary
             );
         buf.extend(frame.to_bytes());
+        */
         Ok(())
         /*
 		buf.extend(msg.as_bytes());
@@ -194,10 +210,10 @@ use tokio_core::io::{Io, Framed};
     // When created by TcpServer, "T" is "TcpStream"
 impl<T: Io + 'static> ServerProto<T> for WsProto {
     /// For this protocol style, `Request` matches the codec `In` type
-    type Request = Vec<u8>;
+    type Request = WsFrame;
 
     /// For this protocol style, `Response` matches the coded `Out` type
-    type Response = Vec<u8>;
+    type Response = WsFrame;
 
     /// A bit of boilerplate to hook in the codec:
     type Transport = Framed<T, WsCodec>;
@@ -207,75 +223,8 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
     fn bind_transport(&self, io: T) -> Self::BindTransport {
         let transport = io.framed(WsCodec::new()); 
         // transport : Framed<Self: TcpStream, C: WsCodec>
-
-        // handshake : StreamFuture< Framed<TcpStream, WsCodec> > where Item: Framed::Item = WsCodec::In
-        let handshake = transport.into_future()
-            // We don't care about the second item of the error tuple, which is
-            // the transport, if it errors out.
-            .map_err(|(e, _)| e)
-            .and_then(|(line, mut transport)| {
-                match line {
-                    Some(ref msg) => {
-                        /* Parse the incoming http request */
-                        let mut headers = [httparse::EMPTY_HEADER; 16];
-                        let mut req = httparse::Request::new(&mut headers);
-                        if let Ok(len) = req.parse(msg.as_slice()) {
-                            /* Formulate a response */
-                            /* FIXME: Just accept the connection for now */
-                            /* First, get the Sec-WebSocket-Key header */
-                            if let Some(key) = req.headers.iter().find(|h| h.name == "Sec-WebSocket-Key") {
-                                if key.value.len() != 16 {
-                                    let err = io::Error::new(io::ErrorKind::Other, 
-                                                             "invalid handshake: No Sec-WebSocket-Key header found");
-                                    return Box::new(future::err(err)) as Self::BindTransport
-                                } 
-
-                                /* Formulate the Server's response:
-                                   https://tools.ietf.org/html/rfc6455#section-1.3 */
-
-                                /* First, formulate the "Sec-WebSocket-Accept" header field */
-                                let mut concat_key = String::new();
-                                concat_key.push_str(str::from_utf8(key.value).unwrap());
-                                concat_key.push_str(MAGIC_GUID);
-                                let output = hash(hash::Type::SHA1, concat_key.as_bytes());
-                                /* Form the HTTP response */
-                                let mut headers : [httparse::Header; 3] = [ 
-                                    httparse::Header{name: "Upgrade", value: b"websocket"},
-                                    httparse::Header{name: "Connection", value: b"Upgrade"},
-                                    httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
-                                    ];
-                                let mut response = httparse::Response::new(&mut headers);
-                                response.version = Some(1u8);
-                                response.code = Some(101);
-                                response.reason = Some("Switching Protocols");
-                                let mut payload = Vec::new();
-                                if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
-                                    return Box::new(transport.send(payload));
-                                } else {
-                                    let err = io::Error::new(io::ErrorKind::Other, 
-                                                             "Could not serialize response");
-                                    return Box::new(future::err(err)) as Self::BindTransport;
-                                }
-                            } 
-                            
-                            let err = io::Error::new(io::ErrorKind::Other, 
-                                                     "invalid handshake: No Sec-WebSocket-Key header found");
-                            Box::new(future::err(err)) as Self::BindTransport
-                            
-                        } else {
-                            let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
-                            Box::new(future::err(err)) as Self::BindTransport
-                        }
-                    }
-                    _ => {
-                        let err = io::Error::new(io::ErrorKind::Other, "invalid handshake");
-                        Box::new(future::err(err)) as Self::BindTransport
-                    }
-                }
-            });
-        //Ok(io.framed(WsCodec))
-
-        Box::new(handshake)
+        let err = io::Error::new(io::ErrorKind::Other, "blah");
+        Box::new(future::err(err)) as Self::BindTransport
     }
 }
 
