@@ -118,6 +118,7 @@ impl Codec for HttpCodec {
     }
 
     fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>) -> io::Result<()> {
+        buf.extend(msg.as_bytes());
         Ok(())
     }
 }
@@ -341,81 +342,15 @@ fn serve<S>(s: S)-> io::Result<()>
         /* Receive the HTTP handshake */
         let mut service = s.new_service()?;
 
-        let handle = handle.clone();
-
-        let receive_handshake = tokio_core::io::read(socket, Vec::new());
-        let reply_handshake = receive_handshake.and_then(|(socket, buf, n)| -> WriteResult {
-            info!("Reply handshake...");
-            /* Parse the HTTP request */
-            let mut headers = [httparse::EMPTY_HEADER; 32];
-            let mut req = httparse::Request::new(&mut headers);
-            if let Ok(httparse::Status::Complete(parsed_size)) = req.parse(buf.as_slice()) {
-                info!("Request parsed correctly. size: {}", parsed_size);
-                /* Send the reply */
-
-                let maybe_key = req.headers.iter().find(|h| { 
-                    info!("Searching for header... {}", h.name);
-                    h.name=="Sec-WebSocket-Key" 
-                });
-                if maybe_key.is_none() {
-                    info!("Could not find Sec-WebSocket-Key header");
-                    let err = io::Error::new(io::ErrorKind::Other, 
-                        "invalid handshake: No Sec-WebSocket-Key header found");
-                    return Box::new(future::err(err)) as WriteResult;
-                }
-
-                let key = maybe_key.unwrap();
-
-                /* Formulate the Server's response:
-                   https://tools.ietf.org/html/rfc6455#section-1.3 */
-
-                /* First, formulate the "Sec-WebSocket-Accept" header field */
-                let mut concat_key = String::new();
-                concat_key.push_str(str::from_utf8(key.value).unwrap());
-                concat_key.push_str(MAGIC_GUID);
-                let output = hash(hash::Type::SHA1, concat_key.as_bytes());
-                /* Form the HTTP response */
-                let mut headers : [httparse::Header; 3] = [ 
-                    httparse::Header{name: "Upgrade", value: b"websocket"},
-                    httparse::Header{name: "Connection", value: b"Upgrade"},
-                    httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
-                    ];
-                let mut response = httparse::Response::new(&mut headers);
-                response.version = Some(1u8);
-                response.code = Some(101);
-                response.reason = Some("Switching Protocols");
-                let mut payload = Vec::new();
-                if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
-                    info!("Sending response...");
-                    return tokio_core::io::write_all(socket, payload).boxed();
-                } else {
-                    let err = io::Error::new(io::ErrorKind::Other, 
-                                             "Could not serialize response");
-                    return Box::new(future::err(err));
-                }
-
-                let err = io::Error::new(io::ErrorKind::Other, 
-                    "invalid handshake: Could not parse HTTP Request");
-                future::err(err).boxed() as WriteResult
-            } else {
-                info!("Could not parse request.");
-                let err = io::Error::new(io::ErrorKind::Other, 
-                    "invalid handshake: Could not parse HTTP Request");
-                future::err(err).boxed() as WriteResult
-            } 
-        });
-        
-        let _handle = handle.clone();
-        let finish_handshake = reply_handshake.and_then( move |(socket, buf)| {
-            let (writer, reader) = socket.framed(WsCodec).split();
-            let responses = reader.and_then(move |req| service.call(req));
-            let server = writer.send_all(responses)
-                .then(|_| Box::new(future::ok( () )) as Box<Future<Item=(), Error=()>> );
-            handle.spawn(server);
+        let transport = socket.framed(HttpCodec);
+        let handshake = transport.and_then(|http_map| {
+            for (key, value) in http_map.iter() {
+                println!("{}: {}", key, str::from_utf8(value.as_slice()).unwrap());
+            }
             Box::new(future::ok(())) as Box<Future<Item=(), Error=io::Error>>
-        }).map_err(|_| () );
+        }).into_future().map( |_| () ).map_err(|_| ());
 
-        _handle.spawn(finish_handshake);
+        handle.spawn(handshake);
 
         Ok(())
 
