@@ -15,6 +15,7 @@ use openssl::crypto::hash::{self, hash};
 use serialize::base64::{FromBase64, STANDARD};
 use ss::frame::Frame;
 use ss::frame::FrameBuilder;
+use std::collections::HashMap;
 //use std::fmt::Write;
 use std::io::Write;
 use std::io;
@@ -85,6 +86,41 @@ enum WsResponse<'h, 'b> {
     WsFrame(Frame),
 }
 */
+
+pub struct HttpCodec;
+
+impl Codec for HttpCodec {
+    type In = Box<HashMap<String, Vec<u8>>>; // Hash of headers/values
+    type Out = String;
+
+    fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Self::In>> {
+        let mut headers = [httparse::EMPTY_HEADER; 16];
+        let mut r = httparse::Request::new(&mut headers);
+        let status = try!(r.parse(buf.as_slice()).map_err(|e| {
+                    let msg = format!("failed to parse http request: {:?}", e);
+                    io::Error::new(io::ErrorKind::Other, msg)
+                    }));
+
+        let amt = match status {
+            httparse::Status::Complete(amt) => amt,
+            httparse::Status::Partial => return Ok(None),
+        };
+
+        let mut hashmap: HashMap<String, Vec<u8>> = HashMap::new();
+        for header in r.headers.iter() {
+            let mut name = String::new();
+            name.push_str(header.name);
+            hashmap.insert(
+                name, 
+                header.value.to_vec());
+        }
+        Ok(Some(Box::new(hashmap)))
+    }
+
+    fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 pub struct WsCodec;
 
@@ -313,11 +349,16 @@ fn serve<S>(s: S)-> io::Result<()>
             /* Parse the HTTP request */
             let mut headers = [httparse::EMPTY_HEADER; 32];
             let mut req = httparse::Request::new(&mut headers);
-            if let Ok(size) = req.parse(buf.as_slice()) {
+            if let Ok(httparse::Status::Complete(parsed_size)) = req.parse(buf.as_slice()) {
+                info!("Request parsed correctly. size: {}", parsed_size);
                 /* Send the reply */
 
-                let maybe_key = req.headers.iter().find(|h| h.name=="Sec-WebSocket-Key");
+                let maybe_key = req.headers.iter().find(|h| { 
+                    info!("Searching for header... {}", h.name);
+                    h.name=="Sec-WebSocket-Key" 
+                });
                 if maybe_key.is_none() {
+                    info!("Could not find Sec-WebSocket-Key header");
                     let err = io::Error::new(io::ErrorKind::Other, 
                         "invalid handshake: No Sec-WebSocket-Key header found");
                     return Box::new(future::err(err)) as WriteResult;
@@ -357,6 +398,7 @@ fn serve<S>(s: S)-> io::Result<()>
                     "invalid handshake: Could not parse HTTP Request");
                 future::err(err).boxed() as WriteResult
             } else {
+                info!("Could not parse request.");
                 let err = io::Error::new(io::ErrorKind::Other, 
                     "invalid handshake: Could not parse HTTP Request");
                 future::err(err).boxed() as WriteResult
