@@ -148,38 +148,16 @@ impl Codec for WsCodec {
             return Ok(Some(WsFrame::HttpFrame(data)))
         } else {
             /* Parse WS Frame */
+            let len = buf.len();
+            let mut buf = buf.drain_to(len);
+            let mut mutbuf = buf.get_mut();
+            let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
+            if let Some(boxed_frame) = result {
+                return Ok(Some(WsFrame::WsFrame(boxed_frame.payload())));
+            } else {
+                return Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"));
+            }
         }
-        Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
-        /*
-        let len = buf.len();
-        let mut buf = buf.drain_to(len);
-        let mut mutbuf = buf.get_mut();
-        let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
-        if let Some(boxed_frame) = result {
-            Ok(Some(boxed_frame.payload()))
-        } else {
-            Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"))
-        }
-        */
-
-/*
-         if let Some(i) = buf.as_slice().iter().position(|&b| b == b'\n') {
-             // remove the serialized frame from the buffer.
-             let line = buf.drain_to(i);
-
-             // Also remove the '\n'
-             buf.drain_to(1);
-
-             // Turn this data into a UTF string and return it in a Frame.
-             match str::from_utf8(line.as_slice()) {
-                 Ok(s) => Ok(Some(s.to_string())),
-                     Err(_) => Err(io::Error::new(io::ErrorKind::Other,
-                                 "invalid UTF-8")),
-             }
-         } else {
-             Ok(None)
-         }
-*/
     }
 
 	fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>)
