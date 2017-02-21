@@ -24,6 +24,7 @@ impl Request {
         let result = request.parse(buf);
         match result {
             Ok(httparse::Status::Complete(_)) => {
+                info!("HTTP request parse complete.");
                 for h in request.headers {
                     if h.name != "" {
                         self.headers.insert(h.name.to_string(), h.value.to_vec());
@@ -31,6 +32,10 @@ impl Request {
                 }
                 self.method = Some( request.method.unwrap().to_string() );
                 self.path = Some( request.path.unwrap().to_string() );
+                result
+            }
+            Ok(httparse::Status::Partial) => {
+                info!("HTTP request parse partial.");
                 result
             }
             _ => result
