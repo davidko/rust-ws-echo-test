@@ -14,7 +14,7 @@ mod http;
 
 use futures::{Sink, Stream};
 use openssl::crypto::hash::{self, hash};
-use serialize::base64::{FromBase64, STANDARD};
+use serialize::base64::{FromBase64, ToBase64, STANDARD};
 use ss::frame::Frame;
 use ss::frame::FrameBuilder;
 use std::collections::HashMap;
@@ -47,6 +47,8 @@ impl Codec for HttpCodec {
 
     fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>) -> io::Result<()> {
         msg.serialize(buf);
+        let buf = buf.clone();
+        info!("Sending message: {}", String::from_utf8(buf).unwrap());
         Ok(())
     }
 }
@@ -128,6 +130,7 @@ impl<T: Io + Send + 'static> ServerProto<T> for WsProto {
                 }) {
                     Some(tuple) => tuple.1,
                     None => {
+                        info!("Could not find Sec-WebSocket-Key header!");
                         let err = io::Error::new(io::ErrorKind::Other, 
                             "Invalid WebSocket handshake: No Sec-WebSocket-Key header found.");
                         return Box::new(future::err(err));
@@ -148,7 +151,7 @@ impl<T: Io + Send + 'static> ServerProto<T> for WsProto {
                 response.reason = Some("Switching Protocols".to_string());
                 response.headers.insert("Upgrade".to_string(), b"websocket".to_vec());
                 response.headers.insert("Connection".to_string(), b"Upgrade".to_vec());
-                response.headers.insert("Sec-WebSocket-Accept".to_string(), output);
+                response.headers.insert("Sec-WebSocket-Accept".to_string(), output.to_base64(STANDARD).as_bytes().to_vec());
                 return Box::new(transport.send(response));
             }).and_then(|transport| {
                 let socket = transport.into_inner();
