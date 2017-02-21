@@ -37,14 +37,14 @@ impl Request {
         }
     }
 
-    pub fn serialize(&self, buf: &mut Vec<u8>) -> Result<(), String> {
+    pub fn serialize(&self, mut buf: &mut Vec<u8>) -> Result<(), String> {
         let method = match self.method {
-            Some(value) => value,
+            Some(ref value) => value,
             _ => {return Err("Could not serialize HTTP response: no \"method\" field".to_string()); }
         };
 
         let path = match self.path {
-            Some(value) => value,
+            Some(ref value) => value,
             _ => {return Err("Could not serialize HTTP response: no \"path\" field".to_string()); }
         };
 
@@ -52,10 +52,10 @@ impl Request {
             return Err("Could not serialize HTTP response.".to_string());
         }
 
-        for (name, value) in self.headers {
-            buf.extend(name.into_bytes());
+        for (ref name, ref value) in &self.headers {
+            buf.extend(name.as_bytes().to_vec());
             buf.extend(b": ");
-            buf.extend(value);
+            buf.extend(value.iter());
             buf.extend(b"\r\n");
         }
         buf.extend(b"\r\n");
@@ -78,14 +78,14 @@ impl Response {
         }
     }
 
-    pub fn serialize(&self, buf: &mut Vec<u8>) -> Result<(), String> {
+    pub fn serialize(&self, mut buf: &mut Vec<u8>) -> Result<(), String> {
         let code = match self.code {
-            Some(value) => value,
+            Some(ref value) => value,
             _ => {return Err("Could not serialize response: No \"code\" field.".to_string()); }
         };
 
         let reason = match self.reason {
-            Some(value) => value,
+            Some(ref value) => value,
             _ => {return Err("Could not serialize response: No \"reason\" field.".to_string()); }
         };
 
@@ -93,10 +93,10 @@ impl Response {
             return Err("Could not serialize response.".to_string());
         }
 
-        for (name, value) in self.headers {
-            buf.extend(name.into_bytes());
+        for (ref name, ref value) in &self.headers {
+            buf.extend(name.as_bytes().to_vec());
             buf.extend(b": ");
-            buf.extend(value);
+            buf.extend(value.iter());
             buf.extend(b"\r\n");
         }
         buf.extend(b"\r\n");

@@ -36,11 +36,11 @@ impl Codec for HttpCodec {
     type Out = http::Response;
 
     fn decode(&mut self, buf: &mut EasyBuf) -> io::Result<Option<Self::In>> {
-        let request = http::Request::new();
+        let mut request = http::Request::new();
         match request.parse(buf.as_slice()) {
             Ok(httparse::Status::Complete(_)) => Ok(Some(request)),
             Ok(httparse::Status::Partial) => Ok(None),
-            _ => Err("Could not parse HTTP request")
+            _ => Err(io::Error::new(io::ErrorKind::Other, "Could not parse HTTP request"))
         }
     }
 
@@ -70,7 +70,7 @@ impl Codec for WsCodec {
         let mut mutbuf = buf.get_mut();
         let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
         if let Some(boxed_frame) = result {
-            return Ok(Some(WsFrame::WsFrame(boxed_frame.payload())));
+            return Ok(Some(boxed_frame.payload()));
         } else {
             return Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"));
         }
@@ -80,11 +80,12 @@ impl Codec for WsCodec {
 			 -> io::Result<()>
 	{
         let frame = ss::frame::WebSocketFrame::new(
-            payload.as_slice(),
+            msg.as_slice(),
             ss::frame::FrameType::Data,
             ss::frame::OpType::Binary
             );
         buf.extend(frame.to_bytes());
+        Ok(())
 	}
 }
 
@@ -93,7 +94,7 @@ pub struct WsProto;
 use tokio_core::io::{Io, Framed};
 
     // When created by TcpServer, "T" is "TcpStream"
-impl<T: Io + 'static> ServerProto<T> for WsProto {
+impl<T: Io + Send + 'static> ServerProto<T> for WsProto {
     /// For this protocol style, `Request` matches the codec `In` type
     type Request = Vec<u8>;
 
@@ -106,22 +107,27 @@ impl<T: Io + 'static> ServerProto<T> for WsProto {
                                     Error = io::Error>>;
 
     fn bind_transport(&self, io: T) -> Self::BindTransport {
-        let transport = io.framed(HttpCodec::new()); 
+        let transport = io.framed(HttpCodec); 
 
-        transport.into_future()
+        let handshake = transport.into_future()
             .map_err(|(e, _)| e)
             .and_then(|(frame, transport)| {
                 /* This should be an HTTP GET request frame */
                 match frame {
                     Some(payload) => {
-                        payload.aeu();
+                        /* TODO */
+                        let socket = transport.into_inner();
+                        let ws_transport = socket.framed(WsCodec);
+                        return Box::new(future::ok(ws_transport)) as Self::BindTransport;
                     }
                     _ => {
                         let err = io::Error::new(io::ErrorKind::Other, "Invalid WebSocket handshake");
                         return Box::new(future::err(err)) as Self::BindTransport;
                     }
                 }
-            })
+            });
+
+        Box::new(handshake)
         // transport : Framed<Self: TcpStream, C: WsCodec>
         //let err = io::Error::new(io::ErrorKind::Other, "blah");
         //Box::new(future::err(err)) as Self::BindTransport
@@ -173,104 +179,19 @@ use tokio_core::reactor;
 use tokio_core::net;
 use tokio_service::{NewService};
 
-fn serve<S>(s: S)-> io::Result<()>
-    where S: NewService<Request = Vec<u8>,
-                        Response = Vec<u8>,
-                        Error = io::Error> + 'static
-{
-    type WriteResult = Box<Future<Item=(tokio_core::net::TcpStream, Vec<u8>), Error=io::Error>>;
-    let mut core = reactor::Core::new()?;
-    let handle = core.handle();
-
-    let address = "0.0.0.0:42001".parse().unwrap();
-    let listener = tokio_core::net::TcpListener::bind(&address, &handle).unwrap();
-
-    let connections = listener.incoming();
-    let server = connections.for_each(move |(socket, _peer_addr)| {
-        info!("Connection received.");
-        /* Receive the HTTP handshake */
-        let mut service = s.new_service()?;
-
-        let transport = socket.framed(HttpCodec);
-
-        let handshake = transport.into_future().map_err(|(e, _)| e).and_then(|(line, transport)| {
-            type HandshakeResult = Box<Future<Item=(), Error=io::Error>>;
-        });
-
-        let handshake = transport.and_then(|http_map| {
-            type HandshakeResult = Box<Future<Item=(), Error=io::Error>>;
-            /*
-            for (key, value) in http_map.iter() {
-                println!("{}: {}", key, str::from_utf8(value.as_slice()).unwrap());
-            }
-            */
-            /* Get the "Sec-WebSocket-Key" header */
-            if !http_map.contains_key("Sec-WebSocket-Key") {
-                let err = io::Error::new(io::ErrorKind::Other, 
-                    "invalid handshake: Sec-WebSocket-Key header not found.");
-                return future::err(err).boxed() as HandshakeResult
-            }
-
-            let key = http_map.get("Sec-WebSocket-Key").unwrap();
-
-            /* Formulate the Server's response:
-               https://tools.ietf.org/html/rfc6455#section-1.3 */
-
-            /* First, formulate the "Sec-WebSocket-Accept" header field */
-            let mut concat_key = String::new();
-            concat_key.push_str(str::from_utf8(key).unwrap());
-            concat_key.push_str(MAGIC_GUID);
-            let output = hash(hash::Type::SHA1, concat_key.as_bytes());
-            /* Form the HTTP response */
-            let mut headers : [httparse::Header; 3] = [ 
-                httparse::Header{name: "Upgrade", value: b"websocket"},
-                httparse::Header{name: "Connection", value: b"Upgrade"},
-                httparse::Header{name: "Sec-WebSocket-Accept", value : output.as_slice() },
-                ];
-            let mut response = httparse::Response::new(&mut headers);
-            response.version = Some(1u8);
-            response.code = Some(101);
-            response.reason = Some("Switching Protocols");
-            let mut payload = Vec::new();
-            if let Some(msg_len) = serialize_httpresponse(&response, &mut payload) {
-                info!("Sending response...");
-                /* TODO */
-            } else {
-                let err = io::Error::new(io::ErrorKind::Other, 
-                                         "Could not serialize response");
-                return Box::new(future::err(err));
-            }
-
-            Box::new(future::ok(())) as HandshakeResult
-        }).into_future().map( |_| () ).map_err(|_| ());
-
-        handle.spawn(handshake);
-
-        Ok(())
-
-    });
-
-    core.run(server)
-}
-                        
-                        
 
 fn main() {
     env_logger::init().unwrap();
     println!("Server starting...");
     info!("Moop!");
     // Specify the localhost address
-    //let addr = "0.0.0.0:12345".parse().unwrap();
-
-    if let Err(e) = serve(|| Ok(Echo)) {
-        println!("Server failed with {}", e);
-    }
+    let addr = "0.0.0.0:12345".parse().unwrap();
 
     // The builder requires a protocol and an address
-    // let server = TcpServer::new(WsProto, addr);
+     let server = TcpServer::new(WsProto, addr);
 
     // We provide a way to *instantiate* the service for each new
     // connection; here, we just immediately return a new instance.
-    // server.serve(|| Ok(Echo));
+     server.serve(|| Ok(Echo));
 }
 
