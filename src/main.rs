@@ -73,9 +73,12 @@ impl Codec for WsCodec {
         let mut mutbuf = buf.get_mut();
         let result = ss::frame::WebSocketFrameBuilder::from_bytes(mutbuf.deref_mut());
         if let Some(boxed_frame) = result {
+            info!("WsCodec delivering good frame...");
             return Ok(Some(boxed_frame.payload()));
         } else {
-            return Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"));
+            //return Err(io::Error::new(io::ErrorKind::Other, "Could not parse WS data frame"));
+            info!("WsCodec delivering no frame...");
+            return Ok(None);
         }
     }
 
@@ -201,7 +204,7 @@ impl Service for Echo {
 
         //future::ok(req).boxed()
 
-        future::ok(Vec::new()).boxed()
+        future::ok(req).boxed()
     }
 }
 
